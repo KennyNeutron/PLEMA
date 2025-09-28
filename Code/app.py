@@ -19,8 +19,8 @@ from inference_sdk import InferenceHTTPClient
 
 # ================== CONFIG ==================
 API_URL = "https://serverless.roboflow.com"
-API_KEY = "122aOY67jDoRdfvlcYg6"          # <-- make sure there is NO trailing space
-BASE_MODEL_ID = "tb-all-3-lzjdz/2"        # exact project slug + version
+API_KEY = "122aOY67jDoRdfvlcYg6"          
+BASE_MODEL_ID = "tb-all-3-lzjdz/2"       
 
 # Thresholds (0.0–1.0)
 CONF_THRESHOLD = 0.1
