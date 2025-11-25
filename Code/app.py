@@ -1,11 +1,10 @@
-# app.py — Flask + Roboflow Hosted Inference with A4 report export
-# ------------------------------------------------------------
+# app.py — Flask + Roboflow Hosted Inference with Sputum AFB-style report
+# ----------------------------------------------------------------------
 # How to run:
 #   pip install flask inference-sdk pillow opencv-python
 #   python app.py
 # Then open: http://127.0.0.1:5000/
 
-import os
 import math
 from pathlib import Path
 from datetime import datetime
@@ -19,10 +18,6 @@ import cv2
 from inference_sdk import InferenceHTTPClient
 
 # ================== CONFIG ==================
-# API_URL = "https://serverless.roboflow.com"
-# API_KEY = "122aOY67jDoRdfvlcYg6"
-# BASE_MODEL_ID = "tb-all-3-lzjdz/2"
-
 API_URL = "https://serverless.roboflow.com"
 API_KEY = "122aOY67jDoRdfvlcYg6"
 BASE_MODEL_ID = "tuberculosis-detection-xxmxp/1"
@@ -41,7 +36,16 @@ STATIC_DIR = Path("static")
 UPLOAD_DIR = STATIC_DIR / "uploads"
 OUTPUT_DIR = STATIC_DIR / "outputs"
 REPORT_DIR = STATIC_DIR / "reports"
-ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"}
+LOGO_PATH = STATIC_DIR / "logo.png"  # save your logo as static/logo.png
+
+ALLOWED_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".JPG",
+    ".JPEG",
+    ".PNG",
+}
 
 for d in [STATIC_DIR, UPLOAD_DIR, OUTPUT_DIR, REPORT_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -50,8 +54,10 @@ for d in [STATIC_DIR, UPLOAD_DIR, OUTPUT_DIR, REPORT_DIR]:
 app = Flask(__name__)
 app.secret_key = "replace-this-with-a-random-secret-for-flash-messages"
 
+
 def allowed_file(filename: str) -> bool:
     return Path(filename).suffix in ALLOWED_EXTENSIONS
+
 
 def load_image_pil(path: Path):
     """Load an image as PIL.Image in RGB."""
@@ -64,9 +70,11 @@ def load_image_pil(path: Path):
         arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
         return Image.fromarray(arr)
 
+
 def build_model_id_with_params(model_id: str, conf: float, overlap: float) -> str:
     sep = "&" if "?" in model_id else "?"
     return f"{model_id}{sep}confidence={conf}&overlap={overlap}"
+
 
 def draw_rectangles_only(img: Image.Image, preds: dict) -> Image.Image:
     """Draw rectangles for predictions on the image in-place and return it."""
@@ -90,6 +98,7 @@ def draw_rectangles_only(img: Image.Image, preds: dict) -> Image.Image:
             draw.rectangle([left - t, top - t, right + t, bottom + t], outline=color)
     return img
 
+
 def count_mtb(preds: dict) -> int:
     """Count predictions above confidence threshold."""
     n = 0
@@ -98,7 +107,42 @@ def count_mtb(preds: dict) -> int:
             n += 1
     return n
 
-def try_load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+
+def classify_afb(mtb_count: int):
+    """
+    Map MTB count to AFB grade and description, based on the reference scale:
+        0  = NO AFB/300 VISUAL FIELDS
+        +n = 1-9 AFB/300 VISUAL FIELDS
+        1+ = 10-99 AFB/300 VISUAL FIELDS
+        2+ = 1-10 AFB/VISUAL FIELD IN AT LEAST 50 FIELDS
+        3+ = >10 AFB/VISUAL FIELD IN AT LEAST 20 FIELDS
+    A simple thresholding is used for demonstration.
+    """
+    if mtb_count <= 0:
+        grade = "0"
+        desc = "NO AFB/300 VISUAL FIELDS"
+        diagnosis = "NEGATIVE FOR AFB (0 = NO AFB/300 VISUAL FIELDS)"
+    elif 1 <= mtb_count <= 9:
+        grade = "+n"
+        desc = "1-9 AFB/300 VISUAL FIELDS"
+        diagnosis = "AFB POSITIVE, +n (1-9 AFB/300 VISUAL FIELDS)"
+    elif 10 <= mtb_count <= 99:
+        grade = "1+"
+        desc = "10-99 AFB/300 VISUAL FIELDS"
+        diagnosis = "AFB POSITIVE, 1+ (10-99 AFB/300 VISUAL FIELDS)"
+    elif 100 <= mtb_count <= 199:
+        grade = "2+"
+        desc = "1-10 AFB/VISUAL FIELD IN AT LEAST 50 FIELDS"
+        diagnosis = "AFB POSITIVE, 2+ (1-10 AFB/VISUAL FIELD IN AT LEAST 50 FIELDS)"
+    else:
+        grade = "3+"
+        desc = ">10 AFB/VISUAL FIELD IN AT LEAST 20 FIELDS"
+        diagnosis = "AFB POSITIVE, 3+ (>10 AFB/VISUAL FIELD IN AT LEAST 20 FIELDS)"
+
+    return grade, desc, diagnosis
+
+
+def try_load_font(size: int):
     """Attempt to load a common TrueType font; fall back to default if unavailable."""
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -114,7 +158,8 @@ def try_load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
                 pass
     return ImageFont.load_default()
 
-def draw_wrapped_text(draw: ImageDraw.ImageDraw, text: str, xy: tuple[int, int], font: ImageFont.ImageFont, fill=(0, 0, 0), max_width=A4_WIDTH_PX - 2*PAGE_MARGIN, line_spacing=8):
+
+def draw_wrapped_text(draw: ImageDraw.ImageDraw, text: str, xy, font, fill=(0, 0, 0), max_width=A4_WIDTH_PX - 2 * PAGE_MARGIN, line_spacing=8):
     """Draw multi-line wrapped text within max_width, returns bottom y of the block."""
     if not text:
         return xy[1]
@@ -123,7 +168,9 @@ def draw_wrapped_text(draw: ImageDraw.ImageDraw, text: str, xy: tuple[int, int],
     x, y = xy
     for word in words:
         test = f"{line} {word}".strip()
-        w, h = draw.textbbox((0, 0), test, font=font)[2:]
+        bbox = draw.textbbox((0, 0), test, font=font)
+        w = bbox[2]
+        h = bbox[3]
         if w <= max_width:
             line = test
         else:
@@ -131,10 +178,12 @@ def draw_wrapped_text(draw: ImageDraw.ImageDraw, text: str, xy: tuple[int, int],
             y += h + line_spacing
             line = word
     if line:
-        h = draw.textbbox((0, 0), line, font=font)[3]
+        bbox = draw.textbbox((0, 0), line, font=font)
+        h = bbox[3]
         draw.text((x, y), line, font=font, fill=fill)
         y += h
     return y
+
 
 def make_report(annotated_img_path: Path, export_type: str, patient: dict, mtb_count: int, remarks: str) -> Path:
     """Compose a single-page A4 report image and save as PNG or PDF."""
@@ -143,70 +192,284 @@ def make_report(annotated_img_path: Path, export_type: str, patient: dict, mtb_c
     draw = ImageDraw.Draw(page)
 
     # Fonts
+    clinic_font = try_load_font(50)
+    clinic_small_font = try_load_font(30)
     title_font = try_load_font(64)
-    h2_font = try_load_font(40)
+    section_font = try_load_font(40)
     body_font = try_load_font(34)
     small_font = try_load_font(28)
+    tiny_font = try_load_font(26)
 
-    # Title and meta
+    # Header and logo
     x = PAGE_MARGIN
     y = PAGE_MARGIN
-    title = "PLEMA – Tuberculosis Detection Report"
-    draw.text((x, y), title, font=title_font, fill=(0, 0, 0))
-    y += draw.textbbox((0, 0), title, font=title_font)[3] + 20
 
-    # Timestamp only (model info removed)
-    meta = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    y = draw_wrapped_text(draw, meta, (x, y), font=small_font, fill=(80, 80, 80))
-    y += 20
+    logo_width = 0
+    logo_height = 0
+    if LOGO_PATH.exists():
+        try:
+            logo = Image.open(LOGO_PATH).convert("RGBA")
+            max_logo_height = 220
+            lw, lh = logo.size
+            scale = min(max_logo_height / lh, 1.0)
+            new_size = (max(1, int(lw * scale)), max(1, int(lh * scale)))
+            logo = logo.resize(new_size, Image.LANCZOS)
+            logo_width, logo_height = logo.size
+            page.paste(logo, (x, y), logo)
+        except Exception:
+            logo_width = 0
+            logo_height = 0
 
-    # Patient block
-    draw.text((x, y), "Patient Details", font=h2_font, fill=(0, 0, 0))
-    y += draw.textbbox((0, 0), "Patient Details", font=h2_font)[3] + 10
+    text_x = x + logo_width + (40 if logo_width > 0 else 0)
+    text_y = y
 
-    pd_lines = [
-        f"Name: {patient.get('name', '').strip()}",
-        f"Patient ID: {patient.get('id', '').strip()}",
-        f"Age: {patient.get('age', '').strip()}",
-        f"Sex: {patient.get('sex', '').strip()}",
+    clinic_name = "KIDAPAWAN MEDICAL SPECIALISTS CENTER,INC."
+    draw.text((text_x, text_y), clinic_name, font=clinic_font, fill=(0, 0, 0))
+    bbox = draw.textbbox((0, 0), clinic_name, font=clinic_font)
+    text_y += bbox[3] + 6
+
+    line2 = "Sudapin, Kidapawan City, North Cotabato Tel. No.: (064)-577-1767"
+    draw.text((text_x, text_y), line2, font=clinic_small_font, fill=(0, 0, 0))
+    bbox = draw.textbbox((0, 0), line2, font=clinic_small_font)
+    text_y += bbox[3] + 4
+
+    line3 = "Bacteriology, ARSP Accredited 2024-0112"
+    draw.text((text_x, text_y), line3, font=clinic_small_font, fill=(0, 0, 0))
+    bbox = draw.textbbox((0, 0), line3, font=clinic_small_font)
+    text_y += bbox[3] + 20
+
+    # Main title centered
+    sputum_title = "SPUTUM AFB RESULT"
+    title_bbox = draw.textbbox((0, 0), sputum_title, font=title_font)
+    title_w = title_bbox[2]
+    title_h = title_bbox[3]
+    title_x = (A4_WIDTH_PX - title_w) // 2
+    title_y = max(text_y, y + logo_height + 10)
+    draw.text((title_x, title_y), sputum_title, font=title_font, fill=(0, 0, 255))
+    y = title_y + title_h + 10
+
+    # Processing timestamp
+    timestamp_text = f"Processing Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    draw.text((PAGE_MARGIN, y), timestamp_text, font=small_font, fill=(0, 0, 0))
+    bbox = draw.textbbox((0, 0), timestamp_text, font=small_font)
+    y += bbox[3] + 30
+
+    # Patient info block
+    name = patient.get("name", "").strip()
+    age = patient.get("age", "").strip()
+    sex = patient.get("sex", "").strip()
+    patient_id = patient.get("id", "").strip()
+
+    age_sex_value = ""
+    if age or sex:
+        age_sex_value = f"{age} / {sex}".strip(" /")
+
+    line = f"NAME: {name}"
+    draw.text((PAGE_MARGIN, y), line, font=body_font, fill=(0, 0, 0))
+
+    right_x = A4_WIDTH_PX // 2 + 40
+    line_r = f"AGE/SEX: {age_sex_value}"
+    draw.text((right_x, y), line_r, font=body_font, fill=(0, 0, 0))
+    y += draw.textbbox((0, 0), line, font=body_font)[3] + 10
+
+    line = "PHYSICIAN: ____________________"
+    draw.text((PAGE_MARGIN, y), line, font=body_font, fill=(0, 0, 0))
+
+    line_r = "Ward: ____________________"
+    draw.text((right_x, y), line_r, font=body_font, fill=(0, 0, 0))
+    y += draw.textbbox((0, 0), line, font=body_font)[3] + 10
+
+    line = f"Bacte. No.: {patient_id or '____________________'}"
+    draw.text((PAGE_MARGIN, y), line, font=body_font, fill=(0, 0, 0))
+
+    line_r = "DATE: ____________________"
+    draw.text((right_x, y), line_r, font=body_font, fill=(0, 0, 0))
+    y += draw.textbbox((0, 0), line, font=body_font)[3] + 10
+
+    line = "Lab No.: ____________________"
+    draw.text((PAGE_MARGIN, y), line, font=body_font, fill=(0, 0, 0))
+    y += draw.textbbox((0, 0), line, font=body_font)[3] + 40
+
+    # AFB classification
+    grade, grade_desc, diagnosis = classify_afb(mtb_count)
+    reading_text = f"{mtb_count} AFB (model-based count)"
+
+    # Specimen table
+    table_x = PAGE_MARGIN + 200
+    table_y = y
+    table_width = A4_WIDTH_PX - table_x - PAGE_MARGIN
+    row_height = 120
+    header_height = 100
+    num_rows = 3  # Visual Appearance, Reading, Laboratory Diagnosis
+    table_height = header_height + row_height * num_rows
+    col_left_width = 600  # left column for labels
+
+    # Outer rectangle
+    draw.rectangle(
+        [table_x, table_y, table_x + table_width, table_y + table_height],
+        outline=(0, 0, 0),
+        width=3,
+    )
+
+    # Horizontal lines
+    # Header separator
+    draw.line(
+        [table_x, table_y + header_height, table_x + table_width, table_y + header_height],
+        fill=(0, 0, 0),
+        width=3,
+    )
+    # Row separators
+    for i in range(1, num_rows):
+        y_line = table_y + header_height + row_height * i
+        draw.line(
+            [table_x, y_line, table_x + table_width, y_line],
+            fill=(0, 0, 0),
+            width=2,
+        )
+
+    # Vertical separator for label vs specimen column
+    draw.line(
+        [table_x + col_left_width, table_y, table_x + col_left_width, table_y + table_height],
+        fill=(0, 0, 0),
+        width=3,
+    )
+
+    # Header text
+    header_text = "Specimen"
+    hbbox = draw.textbbox((0, 0), header_text, font=section_font)
+    hw = hbbox[2]
+    hh = hbbox[3]
+    header_cx = table_x + col_left_width + (table_width - col_left_width) // 2 - hw // 2
+    header_cy = table_y + (header_height - hh) // 2
+    draw.text((header_cx, header_cy), header_text, font=section_font, fill=(0, 0, 0))
+
+    # Row labels
+    row_labels = ["Visual Appearance", "Reading", "Laboratory Diagnosis"]
+    row_values = [
+        "",  # Visual Appearance, left blank
+        reading_text,
+        diagnosis,
     ]
-    for line in pd_lines:
-        draw.text((x, y), line, font=body_font, fill=(0, 0, 0))
-        y += draw.textbbox((0, 0), line, font=body_font)[3] + 6
 
-    y += 16
+    for idx, label in enumerate(row_labels):
+        row_top = table_y + header_height + row_height * idx
+        label_x = table_x + 20
+        label_y = row_top + (row_height - draw.textbbox((0, 0), label, font=body_font)[3]) // 2
+        draw.text((label_x, label_y), label, font=body_font, fill=(0, 0, 0))
 
-    # Findings
-    draw.text((x, y), "Findings", font=h2_font, fill=(0, 0, 0))
-    y += draw.textbbox((0, 0), "Findings", font=h2_font)[3] + 10
-    finding_line = f"Number of MTB Detected: {mtb_count}"
-    draw.text((x, y), finding_line, font=body_font, fill=(0, 0, 0))
-    y += draw.textbbox((0, 0), finding_line, font=body_font)[3] + 20
+        value = row_values[idx]
+        if value:
+            value_x = table_x + col_left_width + 20
+            value_y = row_top + 20
+            draw_wrapped_text(
+                draw,
+                value,
+                (value_x, value_y),
+                font=body_font,
+                fill=(0, 0, 0),
+                max_width=table_width - col_left_width - 40,
+            )
 
-    # Remarks
-    draw.text((x, y), "Remarks", font=h2_font, fill=(0, 0, 0))
-    y += draw.textbbox((0, 0), "Remarks", font=h2_font)[3] + 10
-    y = draw_wrapped_text(draw, remarks or "", (x, y), font=body_font, max_width=A4_WIDTH_PX - 2*PAGE_MARGIN)
-    y += 20
+    y = table_y + table_height + 40
 
-    # Annotated image placement
-    draw.text((x, y), "Annotated Image", font=h2_font, fill=(0, 0, 0))
-    y += draw.textbbox((0, 0), "Annotated Image", font=h2_font)[3] + 10
+    # Remarks block
+    draw.text((PAGE_MARGIN, y), "Remarks:", font=body_font, fill=(0, 0, 0))
+    y += draw.textbbox((0, 0), "Remarks:", font=body_font)[3] + 10
 
-    try:
-        annotated = Image.open(annotated_img_path).convert("RGB")
-    except Exception:
-        annotated = Image.new("RGB", (800, 600), color="lightgray")
-        ImageDraw.Draw(annotated).text((20, 20), "Image unavailable", font=body_font, fill=(0, 0, 0))
+    remarks_top = y
+    remarks_height = 3 * 80
+    remarks_box_bottom = remarks_top + remarks_height
 
-    # Fit the image into the remaining space
-    max_w = A4_WIDTH_PX - 2 * PAGE_MARGIN
-    max_h = A4_HEIGHT_PX - y - PAGE_MARGIN
-    aw, ah = annotated.size
-    scale = min(max_w / aw, max_h / ah) if aw and ah else 1.0
-    new_size = (max(1, int(aw * scale)), max(1, int(ah * scale)))
-    annotated_resized = annotated.resize(new_size, Image.LANCZOS)
-    page.paste(annotated_resized, (x, y))
+    # Three underline lines like the sample
+    line_spacing = 80
+    for i in range(3):
+        ly = remarks_top + i * line_spacing + 50
+        draw.line(
+            [PAGE_MARGIN, ly, A4_WIDTH_PX - PAGE_MARGIN, ly],
+            fill=(0, 0, 0),
+            width=2,
+        )
+
+    if remarks:
+        text_y = remarks_top + 10
+        draw_wrapped_text(
+            draw,
+            remarks,
+            (PAGE_MARGIN + 10, text_y),
+            font=body_font,
+            fill=(0, 0, 0),
+            max_width=A4_WIDTH_PX - 2 * PAGE_MARGIN - 20,
+        )
+
+    y = remarks_box_bottom + 40
+
+    # Result interpretation box
+    ri_box_width = A4_WIDTH_PX - 2 * PAGE_MARGIN
+    ri_box_height = 360
+    ri_x0 = PAGE_MARGIN
+    ri_y0 = y
+    ri_x1 = ri_x0 + ri_box_width
+    ri_y1 = ri_y0 + ri_box_height
+
+    draw.rectangle([ri_x0, ri_y0, ri_x1, ri_y1], outline=(0, 0, 0), width=3)
+
+    # Title inside interpretation box
+    ri_title = "RESULT INTERPRETATION"
+    tbbox = draw.textbbox((0, 0), ri_title, font=section_font)
+    tw = tbbox[2]
+    th = tbbox[3]
+    t_x = ri_x0 + (ri_box_width - tw) // 2
+    t_y = ri_y0 + 20
+    draw.text((t_x, t_y), ri_title, font=section_font, fill=(0, 0, 0))
+
+    ri_lines = [
+        "0  = NO AFB/300 VISUAL FIELDS",
+        "+n = 1-9 AFB/300 VISUAL FIELDS",
+        "1+ = 10-99 AFB/300 VISUAL FIELDS",
+        "2+ = 1-10 AFB/VISUAL FIELD IN AT LEAST 50 FIELDS",
+        "3+ = >10 AFB/VISUAL FIELD IN AT LEAST 20 FIELDS",
+    ]
+
+    text_y_start = t_y + th + 20
+    for line in ri_lines:
+        draw.text((ri_x0 + 40, text_y_start), line, font=body_font, fill=(0, 0, 0))
+        text_y_start += draw.textbbox((0, 0), line, font=body_font)[3] + 6
+
+    y = ri_y1 + 80
+
+    # Footer: performed / verified / pathologist
+    footer_y = A4_HEIGHT_PX - PAGE_MARGIN - 80
+    label_performed = "PERFORMED BY:"
+    label_verified = "VERIFIED BY:"
+    label_pathologist = "PATHOLOGIST:"
+
+    draw.text((PAGE_MARGIN, footer_y), label_performed, font=body_font, fill=(0, 0, 0))
+
+    mid_x = A4_WIDTH_PX // 2 - 150
+    draw.text((mid_x, footer_y), label_verified, font=body_font, fill=(0, 0, 0))
+
+    right_label_bbox = draw.textbbox((0, 0), label_pathologist, font=body_font)
+    right_x = A4_WIDTH_PX - PAGE_MARGIN - right_label_bbox[2]
+    draw.text((right_x, footer_y), label_pathologist, font=body_font, fill=(0, 0, 0))
+
+    # Annotated image (optional, put above footer if there is room)
+    img_available_height = footer_y - 40 - y
+    if img_available_height > 200:
+        try:
+            annotated = Image.open(annotated_img_path).convert("RGB")
+        except Exception:
+            annotated = None
+
+        if annotated is not None:
+            max_w = A4_WIDTH_PX - 2 * PAGE_MARGIN
+            max_h = img_available_height
+            aw, ah = annotated.size
+            scale = min(max_w / aw, max_h / ah) if aw and ah else 1.0
+            new_size = (max(1, int(aw * scale)), max(1, int(ah * scale)))
+            annotated_resized = annotated.resize(new_size, Image.LANCZOS)
+            img_x = PAGE_MARGIN + (max_w - new_size[0]) // 2
+            img_y = y
+            page.paste(annotated_resized, (img_x, img_y))
 
     # Output filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -219,6 +482,7 @@ def make_report(annotated_img_path: Path, export_type: str, patient: dict, mtb_c
         page.save(report_path, "PDF", resolution=300.0)
 
     return report_path
+
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -292,6 +556,7 @@ def index():
         out_url=out_url,
         report_url=report_url,
     )
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="127.0.0.1", port=5000)
